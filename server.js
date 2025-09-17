@@ -5,10 +5,17 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const PORT = process.env.PORT || 3000;
-const HEADLESS = process.env.HEADLESS ?? 'new';   // 'new' consigliato da Puppeteer 22
-const PROXY = process.env.PROXY_URL || null;      // opzionale: es. http://user:pass@host:port
+const HEADLESS = process.env.HEADLESS ?? 'new';   // 'new' consigliato su Puppeteer 22+
+const PROXY = process.env.PROXY_URL || null;      // es. http://user:pass@host:port
 
-// ---- util ----
+// ----- helpers -----
+function slugify(s) {
+  return s.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, '_');
+}
+
 async function launchBrowser() {
   const args = ['--no-sandbox', '--disable-setuid-sandbox'];
   if (PROXY) args.push(`--proxy-server=${PROXY}`);
@@ -22,19 +29,11 @@ async function launchBrowser() {
 async function clickConsent(page) {
   try {
     await page.waitForTimeout(400);
-    // prova pulsanti tipici cookie/consenso
-    const btn = await page.$x(
+    const btns = await page.$x(
       "//button[contains(., 'Accetta') or contains(., 'Accetto') or contains(., 'Accept') or contains(., 'Consenti')]"
     );
-    if (btn[0]) await btn[0].click();
+    if (btns[0]) await btns[0].click();
   } catch {}
-}
-
-function slugify(s) {
-  return s.toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, '_');
 }
 
 async function gotoResults(page, { q, city = 'milano', region = 'lombardia' }) {
@@ -52,7 +51,7 @@ async function gotoResults(page, { q, city = 'milano', region = 'lombardia' }) {
       if (ok) return { ok: true, urlTried: url };
     } catch {}
   }
-  // fallback: homepage con form
+  // fallback: usa la home con form
   try {
     await page.goto('https://www.paginegialle.it', { waitUntil: 'networkidle2', timeout: 45000 });
     await clickConsent(page);
@@ -70,36 +69,25 @@ async function gotoResults(page, { q, city = 'milano', region = 'lombardia' }) {
 async function extractSynonyms(page) {
   return page.evaluate(() => {
     const bag = new Set();
-
     function collectFromBox(box) {
       if (!box) return;
       box.querySelectorAll('a, button, span, li').forEach(el => {
         const t = (el.innerText || '').trim();
-        if (
-          t && t.length < 60 &&
-          !/prenota|aperto|chiuso|ordina|distanza|filtri|mappa|recensioni/i.test(t)
-        ) bag.add(t);
+        if (t && t.length < 60 && !/prenota|aperto|chiuso|ordina|distanza|filtri|mappa|recensioni/i.test(t))
+          bag.add(t);
       });
     }
-
-    // 1) box filtri dichiarati
     document.querySelectorAll('[class*=filter], [class*=filtri], [id*=filter]').forEach(collectFromBox);
-
-    // 2) heading “Tipi di … / Categorie correlate / Specialità”
     document.querySelectorAll('h2,h3,h4,strong,[role=heading]').forEach(h => {
       const tx = (h.textContent || '').toLowerCase();
-      if (/tipi di|categorie correlate|categorie simili|specialit|prodotti|settori/.test(tx)) {
+      if (/tipi di|categorie correlate|categorie simili|specialit|prodotti|settori/.test(tx))
         collectFromBox(h.closest('section,div,aside') || h.parentElement);
-      }
     });
-
-    // 3) fallback testuale vicino a “Tipi di”
     if (!bag.size) {
       const body = document.body.innerText || '';
       const m = body.match(/Tipi di[^\n]*\n([\s\S]{0,600})/i);
       if (m) m[1].split(/\s{2,}|\n/).map(s => s.trim()).filter(Boolean).forEach(v => bag.add(v));
     }
-
     return Array.from(bag);
   });
 }
@@ -117,13 +105,12 @@ async function extractCount(page) {
   return null;
 }
 
-// ---- API ----
+// ----- API -----
 const app = express();
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// Trova sinonimi/sottocategorie (filtri) per una categoria
 app.post('/synonyms', async (req, res) => {
   const { category, city = 'milano', region = 'lombardia', limit = 25 } = req.body || {};
   if (!category) return res.status(400).json({ error: 'category is required' });
@@ -151,7 +138,6 @@ app.post('/synonyms', async (req, res) => {
   }
 });
 
-// Conta risultati per un termine (es. un sinonimo)
 app.post('/count', async (req, res) => {
   const { term, city = 'milano', region = 'lombardia' } = req.body || {};
   if (!term) return res.status(400).json({ error: 'term is required' });
@@ -175,7 +161,6 @@ app.post('/count', async (req, res) => {
   }
 });
 
-// Flusso completo: categoria -> sinonimi -> (opzionale) conteggi
 app.post('/scrape', async (req, res) => {
   const { category, city = 'milano', region = 'lombardia', withCounts = true, limit = 25 } = req.body || {};
   if (!category) return res.status(400).json({ error: 'category is required' });
@@ -216,7 +201,7 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
-// Modalità CLI per nodo n8n "Execute Command"
+// CLI per n8n "Execute Command"
 async function runCli() {
   const [, , flag, categoryArg, cityArg = 'milano', regionArg = 'lombardia'] = process.argv;
   if (flag !== '--cli') return;
@@ -227,6 +212,7 @@ async function runCli() {
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36');
     const nav = await gotoResults(page, { q: categoryArg, city: cityArg, region: regionArg });
     if (!nav.ok) throw new Error('cannot reach results page');
     await page.waitForTimeout(800);
@@ -240,14 +226,14 @@ async function runCli() {
       out.push({ category: categoryArg, synonym: s, results: await extractCount(page) });
     }
     console.log(JSON.stringify(out));
+    process.exit(0);
   } catch (e) {
     console.error(JSON.stringify({ error: e.message }));
     process.exit(2);
   } finally {
-    await launchBrowser().then(b => b.close()).catch(()=>{});
-    process.exit(0);
+    await browser.close().catch(() => {});
   }
 }
+
 if (process.argv[2] === '--cli') runCli();
-else express().listen; // noop per lincea
-app.listen(PORT, () => console.log(`Scraper API listening on :${PORT}`));
+else app.listen(PORT, () => console.log(`Scraper API listening on :${PORT}`));
