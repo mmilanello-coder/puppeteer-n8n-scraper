@@ -1,0 +1,17 @@
+{
+  "name": "puppeteer-n8n-scraper",
+  "version": "1.0.0",
+  "description": "PagineGialle scraper API for n8n",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "cli": "node server.js --cli"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "^22.12.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
